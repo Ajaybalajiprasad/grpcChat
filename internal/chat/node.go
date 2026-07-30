@@ -26,30 +26,47 @@ type MessageSender interface {
 	Send(*ChatMessage) error
 }
 
+func NormalizeAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	if strings.HasPrefix(addr, ":") {
+		return "127.0.0.1" + addr
+	}
+	if strings.HasPrefix(addr, "localhost:") {
+		return "127.0.0.1:" + strings.TrimPrefix(addr, "localhost:")
+	}
+	return addr
+}
+
 type Node struct {
 	UnimplementedChatServiceServer
 	Username   string
 	ListenAddr string
 
-	mu         sync.RWMutex
-	senders    map[string]MessageSender
-	peerMeta   map[string]PeerInfo
-	knownAddrs map[string]bool
-	seenMsgs   map[string]time.Time
+	mu             sync.RWMutex
+	senders        map[string]MessageSender
+	peerMeta       map[string]PeerInfo
+	knownAddrs     map[string]bool
+	activeOutConns map[string]bool
+	seenMsgs       map[string]time.Time
 }
 
 func NewNode(username string, listenAddr string) *Node {
+	normListen := NormalizeAddr(listenAddr)
 	n := &Node{
-		Username:   username,
-		ListenAddr: listenAddr,
-		senders:    make(map[string]MessageSender),
-		peerMeta:   make(map[string]PeerInfo),
-		knownAddrs: make(map[string]bool),
-		seenMsgs:   make(map[string]time.Time),
+		Username:       username,
+		ListenAddr:     normListen,
+		senders:        make(map[string]MessageSender),
+		peerMeta:       make(map[string]PeerInfo),
+		knownAddrs:     make(map[string]bool),
+		activeOutConns: make(map[string]bool),
+		seenMsgs:       make(map[string]time.Time),
 	}
 
-	if listenAddr != "" {
-		n.knownAddrs[listenAddr] = true
+	if normListen != "" {
+		n.knownAddrs[normListen] = true
 	}
 
 	// Start background Peer Exchange (PEX) ticker
@@ -64,13 +81,19 @@ func (n *Node) AddSender(id string, s MessageSender, meta PeerInfo) {
 	n.senders[id] = s
 	n.peerMeta[id] = meta
 	if meta.Address != "" {
-		n.knownAddrs[meta.Address] = true
+		norm := NormalizeAddr(meta.Address)
+		n.knownAddrs[norm] = true
 	}
 }
 
 func (n *Node) RemoveSender(id string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if meta, exists := n.peerMeta[id]; exists {
+		if meta.Address != "" {
+			delete(n.activeOutConns, NormalizeAddr(meta.Address))
+		}
+	}
 	delete(n.senders, id)
 	delete(n.peerMeta, id)
 }
@@ -111,22 +134,25 @@ func (n *Node) startPeerExchangeLoop() {
 
 func (n *Node) handlePeerExchange(msg *ChatMessage) {
 	for _, addr := range msg.KnownPeers {
-		addr = strings.TrimSpace(addr)
-		if addr == "" || addr == n.ListenAddr {
+		norm := NormalizeAddr(addr)
+		if norm == "" || norm == n.ListenAddr {
 			continue
 		}
 
 		n.mu.RLock()
-		alreadyKnown := n.knownAddrs[addr]
+		isKnown := n.knownAddrs[norm]
+		isConnecting := n.activeOutConns[norm]
 		n.mu.RUnlock()
 
-		if !alreadyKnown {
+		if !isKnown {
 			n.mu.Lock()
-			n.knownAddrs[addr] = true
+			n.knownAddrs[norm] = true
 			n.mu.Unlock()
+		}
 
-			log.Printf("[PEX] Discovered new peer: %s (auto-connecting...)\n", addr)
-			n.ConnectToPeer(addr)
+		if !isConnecting {
+			log.Printf("[PEX] Discovered new peer: %s (auto-connecting...)\n", norm)
+			n.ConnectToPeer(norm)
 		}
 	}
 }
@@ -181,7 +207,7 @@ func (n *Node) Chat(stream grpc.BidiStreamingServer[ChatMessage, ChatMessage]) e
 	streamID := fmt.Sprintf("in-%p", stream)
 	n.AddSender(streamID, stream, PeerInfo{
 		ID:        streamID,
-		Username:  "Unknown Peer",
+		Username:  "Connecting Peer...",
 		Address:   "",
 		Direction: "IN",
 		Connected: time.Now(),
@@ -204,8 +230,9 @@ func (n *Node) Chat(stream grpc.BidiStreamingServer[ChatMessage, ChatMessage]) e
 			if meta, exists := n.peerMeta[streamID]; exists {
 				meta.Username = msg.Username
 				if msg.ListenAddr != "" {
-					meta.Address = msg.ListenAddr
-					n.knownAddrs[msg.ListenAddr] = true
+					norm := NormalizeAddr(msg.ListenAddr)
+					meta.Address = norm
+					n.knownAddrs[norm] = true
 				}
 				n.peerMeta[streamID] = meta
 			}
@@ -225,10 +252,29 @@ func (n *Node) Chat(stream grpc.BidiStreamingServer[ChatMessage, ChatMessage]) e
 }
 
 func (n *Node) ConnectToPeer(address string) {
+	normAddr := NormalizeAddr(address)
+	if normAddr == "" || normAddr == n.ListenAddr {
+		return // Do NOT connect to self
+	}
+
+	n.mu.Lock()
+	if n.activeOutConns[normAddr] {
+		n.mu.Unlock()
+		return // Already connected or connecting
+	}
+	n.activeOutConns[normAddr] = true
+	n.mu.Unlock()
+
 	go func() {
+		defer func() {
+			n.mu.Lock()
+			delete(n.activeOutConns, normAddr)
+			n.mu.Unlock()
+		}()
+
 		for {
 			conn, err := grpc.NewClient(
-				address,
+				normAddr,
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			)
 			if err != nil {
@@ -244,13 +290,13 @@ func (n *Node) ConnectToPeer(address string) {
 				continue
 			}
 
-			streamID := fmt.Sprintf("out-%s-%p", address, stream)
-			log.Println("Connected to peer:", address)
+			streamID := fmt.Sprintf("out-%s-%p", normAddr, stream)
+			log.Println("Connected to peer:", normAddr)
 
 			n.AddSender(streamID, stream, PeerInfo{
 				ID:        streamID,
-				Username:  "Peer (" + address + ")",
-				Address:   address,
+				Username:  "Peer (" + normAddr + ")",
+				Address:   normAddr,
 				Direction: "OUT",
 				Connected: time.Now(),
 			})
@@ -267,7 +313,7 @@ func (n *Node) ConnectToPeer(address string) {
 			for {
 				msg, err := stream.Recv()
 				if err != nil {
-					log.Printf("Peer %s disconnected\n", address)
+					log.Printf("Peer %s disconnected\n", normAddr)
 					n.RemoveSender(streamID)
 					stream.CloseSend()
 					conn.Close()
@@ -304,6 +350,33 @@ func (n *Node) PrintTopology() {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
+	// Deduplicate entries by Username & Address for clean topology display
+	type cleanEntry struct {
+		Username  string
+		Address   string
+		Direction string
+		Connected time.Time
+	}
+	seenKeys := make(map[string]bool)
+	var entries []cleanEntry
+
+	for _, meta := range n.peerMeta {
+		if meta.Username == n.Username {
+			continue // Skip self if self handshake received
+		}
+		key := fmt.Sprintf("%s-%s", meta.Username, meta.Address)
+		if seenKeys[key] {
+			continue
+		}
+		seenKeys[key] = true
+		entries = append(entries, cleanEntry{
+			Username:  meta.Username,
+			Address:   meta.Address,
+			Direction: meta.Direction,
+			Connected: meta.Connected,
+		})
+	}
+
 	fmt.Println()
 	fmt.Println("==========================================================")
 	fmt.Println("                 NETWORK TOPOLOGY GRAPH                   ")
@@ -311,30 +384,28 @@ func (n *Node) PrintTopology() {
 	fmt.Printf(" Local Node Username : %s\n", n.Username)
 	fmt.Printf(" Listening Address   : %s\n", n.ListenAddr)
 	fmt.Printf(" Total Discovered IP : %d\n", len(n.knownAddrs))
-	fmt.Printf(" Active Connections  : %d\n", len(n.peerMeta))
+	fmt.Printf(" Active Remote Peers : %d\n", len(entries))
 	fmt.Println("----------------------------------------------------------")
 
-	if len(n.peerMeta) == 0 {
+	if len(entries) == 0 {
 		fmt.Println(" (No active connections - running as standalone node)")
 	} else {
-		i := 0
-		total := len(n.peerMeta)
-		for _, meta := range n.peerMeta {
-			i++
+		total := len(entries)
+		for i, entry := range entries {
 			prefix := " ├──"
-			if i == total {
+			if i == total-1 {
 				prefix = " └──"
 			}
-			addrStr := meta.Address
+			addrStr := entry.Address
 			if addrStr == "" {
 				addrStr = "remote"
 			}
 			fmt.Printf("%s [%-3s] %-15s (Address: %s, Connected: %s ago)\n",
 				prefix,
-				meta.Direction,
-				meta.Username,
+				entry.Direction,
+				entry.Username,
 				addrStr,
-				time.Since(meta.Connected).Round(time.Second),
+				time.Since(entry.Connected).Round(time.Second),
 			)
 		}
 	}
