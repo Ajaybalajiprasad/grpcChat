@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"strings"
 	"sync"
@@ -51,6 +50,9 @@ type Node struct {
 	knownAddrs     map[string]bool
 	activeOutConns map[string]bool
 	seenMsgs       map[string]time.Time
+
+	MsgChan chan *ChatMessage
+	LogChan chan string
 }
 
 func NewNode(username string, listenAddr string) *Node {
@@ -63,6 +65,8 @@ func NewNode(username string, listenAddr string) *Node {
 		knownAddrs:     make(map[string]bool),
 		activeOutConns: make(map[string]bool),
 		seenMsgs:       make(map[string]time.Time),
+		MsgChan:        make(chan *ChatMessage, 100),
+		LogChan:        make(chan string, 100),
 	}
 
 	if normListen != "" {
@@ -73,6 +77,13 @@ func NewNode(username string, listenAddr string) *Node {
 	go n.startPeerExchangeLoop()
 
 	return n
+}
+
+func (n *Node) log(msg string) {
+	select {
+	case n.LogChan <- msg:
+	default:
+	}
 }
 
 func (n *Node) AddSender(id string, s MessageSender, meta PeerInfo) {
@@ -148,10 +159,12 @@ func (n *Node) handlePeerExchange(msg *ChatMessage) {
 			n.mu.Lock()
 			n.knownAddrs[norm] = true
 			n.mu.Unlock()
+
+			n.log(fmt.Sprintf("[PEX] Discovered new peer: %s (auto-connecting...)", norm))
+			n.ConnectToPeer(norm)
 		}
 
 		if !isConnecting {
-			log.Printf("[PEX] Discovered new peer: %s (auto-connecting...)\n", norm)
 			n.ConnectToPeer(norm)
 		}
 	}
@@ -246,7 +259,10 @@ func (n *Node) Chat(stream grpc.BidiStreamingServer[ChatMessage, ChatMessage]) e
 		}
 
 		if n.Broadcast(msg, streamID) {
-			fmt.Printf("[%s] %s\n", msg.Username, msg.Message)
+			select {
+			case n.MsgChan <- msg:
+			default:
+			}
 		}
 	}
 }
@@ -291,7 +307,7 @@ func (n *Node) ConnectToPeer(address string) {
 			}
 
 			streamID := fmt.Sprintf("out-%s-%p", normAddr, stream)
-			log.Println("Connected to peer:", normAddr)
+			n.log(fmt.Sprintf("Connected to peer: %s", normAddr))
 
 			n.AddSender(streamID, stream, PeerInfo{
 				ID:        streamID,
@@ -313,7 +329,7 @@ func (n *Node) ConnectToPeer(address string) {
 			for {
 				msg, err := stream.Recv()
 				if err != nil {
-					log.Printf("Peer %s disconnected\n", normAddr)
+					n.log(fmt.Sprintf("Peer %s disconnected", normAddr))
 					n.RemoveSender(streamID)
 					stream.CloseSend()
 					conn.Close()
@@ -336,7 +352,10 @@ func (n *Node) ConnectToPeer(address string) {
 				}
 
 				if n.Broadcast(msg, streamID) {
-					fmt.Printf("[%s] %s\n", msg.Username, msg.Message)
+					select {
+					case n.MsgChan <- msg:
+					default:
+					}
 				}
 			}
 
@@ -345,70 +364,45 @@ func (n *Node) ConnectToPeer(address string) {
 	}()
 }
 
-// PrintTopology renders a live ASCII map of the node's P2P network connections
-func (n *Node) PrintTopology() {
+// GetTopologyString returns a string representation of the network mapping
+func (n *Node) GetTopologyString() string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// Deduplicate entries by Username & Address for clean topology display
-	type cleanEntry struct {
-		Username  string
-		Address   string
-		Direction string
-		Connected time.Time
-	}
-	seenKeys := make(map[string]bool)
-	var entries []cleanEntry
+	var sb strings.Builder
+	sb.WriteString("\n==========================================================\n")
+	sb.WriteString("                 NETWORK TOPOLOGY GRAPH                   \n")
+	sb.WriteString("==========================================================\n")
+	sb.WriteString(fmt.Sprintf(" Local Node Username : %s\n", n.Username))
+	sb.WriteString(fmt.Sprintf(" Listening Address   : %s\n", n.ListenAddr))
+	sb.WriteString(fmt.Sprintf(" Total Discovered IP : %d\n", len(n.knownAddrs)))
+	sb.WriteString(fmt.Sprintf(" Active Connections  : %d\n", len(n.peerMeta)))
+	sb.WriteString("----------------------------------------------------------\n")
 
-	for _, meta := range n.peerMeta {
-		if meta.Username == n.Username {
-			continue // Skip self if self handshake received
-		}
-		key := fmt.Sprintf("%s-%s", meta.Username, meta.Address)
-		if seenKeys[key] {
-			continue
-		}
-		seenKeys[key] = true
-		entries = append(entries, cleanEntry{
-			Username:  meta.Username,
-			Address:   meta.Address,
-			Direction: meta.Direction,
-			Connected: meta.Connected,
-		})
-	}
-
-	fmt.Println()
-	fmt.Println("==========================================================")
-	fmt.Println("                 NETWORK TOPOLOGY GRAPH                   ")
-	fmt.Println("==========================================================")
-	fmt.Printf(" Local Node Username : %s\n", n.Username)
-	fmt.Printf(" Listening Address   : %s\n", n.ListenAddr)
-	fmt.Printf(" Total Discovered IP : %d\n", len(n.knownAddrs))
-	fmt.Printf(" Active Remote Peers : %d\n", len(entries))
-	fmt.Println("----------------------------------------------------------")
-
-	if len(entries) == 0 {
-		fmt.Println(" (No active connections - running as standalone node)")
+	if len(n.peerMeta) == 0 {
+		sb.WriteString(" (No active connections - running as standalone node)\n")
 	} else {
-		total := len(entries)
-		for i, entry := range entries {
+		i := 0
+		total := len(n.peerMeta)
+		for _, meta := range n.peerMeta {
+			i++
 			prefix := " ├──"
-			if i == total-1 {
+			if i == total {
 				prefix = " └──"
 			}
-			addrStr := entry.Address
+			addrStr := meta.Address
 			if addrStr == "" {
 				addrStr = "remote"
 			}
-			fmt.Printf("%s [%-3s] %-15s (Address: %s, Connected: %s ago)\n",
+			sb.WriteString(fmt.Sprintf("%s [%-3s] %-15s (Address: %s, Connected: %s ago)\n",
 				prefix,
-				entry.Direction,
-				entry.Username,
+				meta.Direction,
+				meta.Username,
 				addrStr,
-				time.Since(entry.Connected).Round(time.Second),
-			)
+				time.Since(meta.Connected).Round(time.Second),
+			))
 		}
 	}
-	fmt.Println("==========================================================")
-	fmt.Println()
+	sb.WriteString("==========================================================\n\n")
+	return sb.String()
 }
