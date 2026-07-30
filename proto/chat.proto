@@ -12,4 +12,5 @@ message ChatMessage {
   string username = 1;
   string message = 2;
   int64 timestamp = 3;
+  string id = 4;
 }

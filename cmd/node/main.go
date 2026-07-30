@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"grpcchat/internal/chat"
@@ -15,10 +17,9 @@ import (
 )
 
 func main() {
-
 	username := flag.String("username", "anonymous", "Your username")
 	listen := flag.String("listen", ":50051", "Address to listen on")
-	peer := flag.String("peer", "", "Peer address")
+	peerStr := flag.String("peer", "", "Peer address or comma-separated addresses (e.g. 10.42.0.250:50051)")
 
 	flag.Parse()
 
@@ -27,85 +28,49 @@ func main() {
 		log.Fatal(err)
 	}
 
+	node := chat.NewNode(*username)
+
 	grpcServer := grpc.NewServer()
-	chat.RegisterChatServiceServer(grpcServer, &chat.Server{})
+	chat.RegisterChatServiceServer(grpcServer, node)
 
 	go func() {
 		log.Println("gRPC server listening on", *listen)
-
 		if err := grpcServer.Serve(listener); err != nil {
 			log.Fatal(err)
 		}
 	}()
 
-	time.Sleep(time.Second)
+	time.Sleep(500 * time.Millisecond)
 
-	address := *peer
-	if address == "" {
-		address = "localhost:50051"
-	}
-
-	var (
-		client *chat.Client
-		stream grpc.BidiStreamingClient[chat.ChatMessage, chat.ChatMessage]
-	)
-
-	for {
-
-		client, err = chat.NewClient(address)
-		if err != nil {
-			log.Println("Unable to create client:", err)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		stream, err = client.OpenStream()
-		if err != nil {
-			log.Println("Peer unavailable, retrying in 2 seconds...")
-			client.Close()
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		log.Println("Connected to peer:", address)
-		break
-	}
-
-	defer client.Close()
-
-	go func() {
-		for {
-			reply, err := stream.Recv()
-			if err != nil {
-				log.Println("Receive error:", err)
-				return
+	if *peerStr != "" {
+		peers := strings.Split(*peerStr, ",")
+		for _, peer := range peers {
+			peer = strings.TrimSpace(peer)
+			if peer != "" {
+				node.ConnectToPeer(peer)
 			}
-
-			log.Printf("[%s] %s\n", reply.Username, reply.Message)
 		}
-	}()
+	}
 
 	scanner := bufio.NewScanner(os.Stdin)
-
 	for {
-		fmt.Print("> ")
-
 		if !scanner.Scan() {
 			break
 		}
 
 		text := scanner.Text()
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
 
-		err := stream.Send(&chat.ChatMessage{
+		msg := &chat.ChatMessage{
+			Id:        fmt.Sprintf("%s-%d-%d", *username, time.Now().UnixNano(), rand.Int63()),
 			Username:  *username,
 			Message:   text,
 			Timestamp: time.Now().Unix(),
-		})
-
-		if err != nil {
-			log.Println("Send failed:", err)
-			break
 		}
+
+		node.Broadcast(msg, "local-cli")
 	}
 
 	if err := scanner.Err(); err != nil {
