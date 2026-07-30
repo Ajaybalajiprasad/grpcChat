@@ -8,9 +8,19 @@ service ChatService {
   rpc Chat(stream ChatMessage) returns (stream ChatMessage);
 }
 
+enum MessageType {
+  CHAT = 0;
+  PEER_EXCHANGE = 1;
+  PING = 2;
+  PONG = 3;
+}
+
 message ChatMessage {
   string username = 1;
   string message = 2;
   int64 timestamp = 3;
   string id = 4;
+  MessageType type = 5;
+  repeated string known_peers = 6;
+  string listen_addr = 7;
 }

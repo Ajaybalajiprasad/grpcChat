@@ -9,10 +9,9 @@ import (
 )
 
 func TestP2PMeshBroadcast(t *testing.T) {
-	// Setup 3 nodes: Node A (Sakthivasan), Node B (Ajay), Node C (Kathir)
-	nodeA := NewNode("Sakthivasan")
-	nodeB := NewNode("Ajay")
-	nodeC := NewNode("Kathir")
+	nodeA := NewNode("Sakthivasan", "127.0.0.1:50051")
+	nodeB := NewNode("Ajay", "127.0.0.1:50052")
+	nodeC := NewNode("Kathir", "127.0.0.1:50053")
 
 	lisA, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -49,6 +48,7 @@ func TestP2PMeshBroadcast(t *testing.T) {
 		Username:  "Sakthivasan",
 		Message:   "Hello from Sakthivasan",
 		Timestamp: time.Now().Unix(),
+		Type:      MessageType_CHAT,
 	}
 
 	if !nodeA.Broadcast(msgA, "local-cli") {
@@ -57,13 +57,13 @@ func TestP2PMeshBroadcast(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 
-	nodeB.mu.Lock()
+	nodeB.mu.RLock()
 	_, seenB := nodeB.seenMsgs["msg-a-1"]
-	nodeB.mu.Unlock()
+	nodeB.mu.RUnlock()
 
-	nodeC.mu.Lock()
+	nodeC.mu.RLock()
 	_, seenC := nodeC.seenMsgs["msg-a-1"]
-	nodeC.mu.Unlock()
+	nodeC.mu.RUnlock()
 
 	if !seenB {
 		t.Errorf("Node B (Ajay) did not receive Sakthivasan's message!")
@@ -78,6 +78,7 @@ func TestP2PMeshBroadcast(t *testing.T) {
 		Username:  "Ajay",
 		Message:   "Hello from Ajay",
 		Timestamp: time.Now().Unix(),
+		Type:      MessageType_CHAT,
 	}
 
 	if !nodeB.Broadcast(msgB, "local-cli") {
@@ -86,13 +87,13 @@ func TestP2PMeshBroadcast(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 
-	nodeA.mu.Lock()
+	nodeA.mu.RLock()
 	_, seenAfromB := nodeA.seenMsgs["msg-b-1"]
-	nodeA.mu.Unlock()
+	nodeA.mu.RUnlock()
 
-	nodeC.mu.Lock()
+	nodeC.mu.RLock()
 	_, seenCfromB := nodeC.seenMsgs["msg-b-1"]
-	nodeC.mu.Unlock()
+	nodeC.mu.RUnlock()
 
 	if !seenAfromB {
 		t.Errorf("Node A (Sakthivasan) did not receive Ajay's message!")

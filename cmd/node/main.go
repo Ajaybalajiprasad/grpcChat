@@ -28,7 +28,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	node := chat.NewNode(*username)
+	node := chat.NewNode(*username, *listen)
 
 	grpcServer := grpc.NewServer()
 	chat.RegisterChatServiceServer(grpcServer, node)
@@ -59,15 +59,40 @@ func main() {
 		}
 
 		text := scanner.Text()
-		if strings.TrimSpace(text) == "" {
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
 			continue
 		}
 
+		// System Slash Commands
+		if strings.HasPrefix(trimmed, "/") {
+			switch trimmed {
+			case "/topology", "/mesh", "/graph":
+				node.PrintTopology()
+				continue
+			case "/peers", "/list":
+				node.PrintTopology()
+				continue
+			case "/help":
+				fmt.Println("--- Available Commands ---")
+				fmt.Println("  /topology or /mesh : Display visual network topology graph")
+				fmt.Println("  /peers or /list    : Show connected peer nodes")
+				fmt.Println("  /help              : Show this help message")
+				fmt.Println("--------------------------")
+				continue
+			default:
+				fmt.Println("Unknown command. Type /help for available commands.")
+				continue
+			}
+		}
+
 		msg := &chat.ChatMessage{
-			Id:        fmt.Sprintf("%s-%d-%d", *username, time.Now().UnixNano(), rand.Int63()),
-			Username:  *username,
-			Message:   text,
-			Timestamp: time.Now().Unix(),
+			Id:         fmt.Sprintf("%s-%d-%d", *username, time.Now().UnixNano(), rand.Int63()),
+			Username:   *username,
+			Message:    text,
+			Timestamp:  time.Now().Unix(),
+			Type:       chat.MessageType_CHAT,
+			ListenAddr: *listen,
 		}
 
 		node.Broadcast(msg, "local-cli")
