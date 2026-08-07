@@ -28,6 +28,7 @@ const (
 	MessageType_PEER_EXCHANGE MessageType = 1
 	MessageType_PING          MessageType = 2
 	MessageType_PONG          MessageType = 3
+	MessageType_FILE          MessageType = 4
 )
 
 // Enum value maps for MessageType.
@@ -37,12 +38,14 @@ var (
 		1: "PEER_EXCHANGE",
 		2: "PING",
 		3: "PONG",
+		4: "FILE",
 	}
 	MessageType_value = map[string]int32{
 		"CHAT":          0,
 		"PEER_EXCHANGE": 1,
 		"PING":          2,
 		"PONG":          3,
+		"FILE":          4,
 	}
 )
 
@@ -82,6 +85,9 @@ type ChatMessage struct {
 	Type          MessageType            `protobuf:"varint,5,opt,name=type,proto3,enum=chat.MessageType" json:"type,omitempty"`
 	KnownPeers    []string               `protobuf:"bytes,6,rep,name=known_peers,json=knownPeers,proto3" json:"known_peers,omitempty"`
 	ListenAddr    string                 `protobuf:"bytes,7,opt,name=listen_addr,json=listenAddr,proto3" json:"listen_addr,omitempty"`
+	FileData      []byte                 `protobuf:"bytes,8,opt,name=file_data,json=fileData,proto3" json:"file_data,omitempty"`
+	FileName      string                 `protobuf:"bytes,9,opt,name=file_name,json=fileName,proto3" json:"file_name,omitempty"`
+	FileSize      int64                  `protobuf:"varint,10,opt,name=file_size,json=fileSize,proto3" json:"file_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -165,11 +171,32 @@ func (x *ChatMessage) GetListenAddr() string {
 	return ""
 }
 
+func (x *ChatMessage) GetFileData() []byte {
+	if x != nil {
+		return x.FileData
+	}
+	return nil
+}
+
+func (x *ChatMessage) GetFileName() string {
+	if x != nil {
+		return x.FileName
+	}
+	return ""
+}
+
+func (x *ChatMessage) GetFileSize() int64 {
+	if x != nil {
+		return x.FileSize
+	}
+	return 0
+}
+
 var File_proto_chat_proto protoreflect.FileDescriptor
 
 const file_proto_chat_proto_rawDesc = "" +
 	"\n" +
-	"\x10proto/chat.proto\x12\x04chat\"\xda\x01\n" +
+	"\x10proto/chat.proto\x12\x04chat\"\xb1\x02\n" +
 	"\vChatMessage\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1c\n" +
@@ -179,12 +206,17 @@ const file_proto_chat_proto_rawDesc = "" +
 	"\vknown_peers\x18\x06 \x03(\tR\n" +
 	"knownPeers\x12\x1f\n" +
 	"\vlisten_addr\x18\a \x01(\tR\n" +
-	"listenAddr*>\n" +
+	"listenAddr\x12\x1b\n" +
+	"\tfile_data\x18\b \x01(\fR\bfileData\x12\x1b\n" +
+	"\tfile_name\x18\t \x01(\tR\bfileName\x12\x1b\n" +
+	"\tfile_size\x18\n" +
+	" \x01(\x03R\bfileSize*H\n" +
 	"\vMessageType\x12\b\n" +
 	"\x04CHAT\x10\x00\x12\x11\n" +
 	"\rPEER_EXCHANGE\x10\x01\x12\b\n" +
 	"\x04PING\x10\x02\x12\b\n" +
-	"\x04PONG\x10\x032?\n" +
+	"\x04PONG\x10\x03\x12\b\n" +
+	"\x04FILE\x10\x042?\n" +
 	"\vChatService\x120\n" +
 	"\x04Chat\x12\x11.chat.ChatMessage\x1a\x11.chat.ChatMessage(\x010\x01B\x16Z\x14./internal/chat;chatb\x06proto3"
 

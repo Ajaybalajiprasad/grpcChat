@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
 
 type PeerInfo struct {
 	ID        string
@@ -259,6 +262,9 @@ func (n *Node) Chat(stream grpc.BidiStreamingServer[ChatMessage, ChatMessage]) e
 		}
 
 		if n.Broadcast(msg, streamID) {
+			if msg.Type == MessageType_FILE {
+				n.handleFileReceived(msg)
+			}
 			select {
 			case n.MsgChan <- msg:
 			default:
@@ -266,6 +272,28 @@ func (n *Node) Chat(stream grpc.BidiStreamingServer[ChatMessage, ChatMessage]) e
 		}
 	}
 }
+
+func (n *Node) handleFileReceived(msg *ChatMessage) {
+	if len(msg.FileData) == 0 || msg.FileName == "" {
+		return
+	}
+	downloadsDir := "downloads"
+	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
+		n.log(fmt.Sprintf("Failed to create downloads directory: %v", err))
+		return
+	}
+
+	cleanFileName := filepath.Base(msg.FileName)
+	savePath := filepath.Join(downloadsDir, cleanFileName)
+
+	if err := os.WriteFile(savePath, msg.FileData, 0644); err != nil {
+		n.log(fmt.Sprintf("Failed to save file %s: %v", cleanFileName, err))
+		return
+	}
+
+	n.log(fmt.Sprintf("[File Saved] %s (%d bytes) saved to %s", cleanFileName, len(msg.FileData), savePath))
+}
+
 
 func (n *Node) ConnectToPeer(address string) {
 	normAddr := NormalizeAddr(address)
@@ -352,6 +380,9 @@ func (n *Node) ConnectToPeer(address string) {
 				}
 
 				if n.Broadcast(msg, streamID) {
+					if msg.Type == MessageType_FILE {
+						n.handleFileReceived(msg)
+					}
 					select {
 					case n.MsgChan <- msg:
 					default:

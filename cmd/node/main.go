@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -99,21 +100,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.Reset()
 
 				if strings.HasPrefix(trimmed, "/") {
-					switch trimmed {
-					case "/topology", "/mesh", "/graph":
-						topo := m.node.GetTopologyString()
-						m.messages = append(m.messages, sysStyle.Render(topo))
-					case "/peers", "/list":
-						topo := m.node.GetTopologyString()
-						m.messages = append(m.messages, sysStyle.Render(topo))
-					case "/help":
-						helpMsg := "--- Available Commands ---\n" +
-							"  /topology or /mesh : Display visual network topology graph\n" +
-							"  /peers or /list    : Show connected peer nodes\n" +
-							"  /help              : Show this help message"
-						m.messages = append(m.messages, sysStyle.Render(helpMsg))
-					default:
-						m.messages = append(m.messages, sysStyle.Render("Unknown command. Type /help for available commands."))
+					if strings.HasPrefix(trimmed, "/sendfile ") || strings.HasPrefix(trimmed, "/send ") {
+						parts := strings.SplitN(trimmed, " ", 2)
+						if len(parts) == 2 {
+							filePath := strings.TrimSpace(parts[1])
+							data, err := os.ReadFile(filePath)
+							if err != nil {
+								m.messages = append(m.messages, sysStyle.Render(fmt.Sprintf("Failed to read file: %v", err)))
+							} else {
+								fileName := filepath.Base(filePath)
+								fileMsg := &chat.ChatMessage{
+									Id:         fmt.Sprintf("file-%s-%d-%d", m.username, time.Now().UnixNano(), rand.Int63()),
+									Username:   m.username,
+									Timestamp:  time.Now().Unix(),
+									Type:       chat.MessageType_FILE,
+									FileName:   fileName,
+									FileData:   data,
+									FileSize:   int64(len(data)),
+									ListenAddr: m.listen,
+								}
+								m.node.Broadcast(fileMsg, "local-cli")
+								m.messages = append(m.messages, meStyle.Render(fmt.Sprintf("[You sent file] %s (%d bytes)", fileName, len(data))))
+							}
+						}
+					} else {
+						switch trimmed {
+						case "/topology", "/mesh", "/graph":
+							topo := m.node.GetTopologyString()
+							m.messages = append(m.messages, sysStyle.Render(topo))
+						case "/peers", "/list":
+							topo := m.node.GetTopologyString()
+							m.messages = append(m.messages, sysStyle.Render(topo))
+						case "/help":
+							helpMsg := "--- Available Commands ---\n" +
+								"  /sendfile <path>   : Send file to connected peers\n" +
+								"  /topology or /mesh : Display visual network topology graph\n" +
+								"  /peers or /list    : Show connected peer nodes\n" +
+								"  /help              : Show this help message"
+							m.messages = append(m.messages, sysStyle.Render(helpMsg))
+						default:
+							m.messages = append(m.messages, sysStyle.Render("Unknown command. Type /help for available commands."))
+						}
 					}
 				} else {
 					chatMsg := &chat.ChatMessage{
@@ -150,11 +177,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case *chat.ChatMessage:
-		formatted := fmt.Sprintf("[%s] %s", msg.Username, msg.Message)
+		var formatted string
+		if msg.Type == chat.MessageType_FILE {
+			formatted = fmt.Sprintf("[%s sent file] %s (%d bytes) -> saved to ./downloads/%s", msg.Username, msg.FileName, msg.FileSize, filepath.Base(msg.FileName))
+		} else {
+			formatted = fmt.Sprintf("[%s] %s", msg.Username, msg.Message)
+		}
 		m.messages = append(m.messages, msgStyle.Render(formatted))
 		m.viewport.SetContent(strings.Join(m.messages, "\n"))
 		m.viewport.GotoBottom()
 		return m, tea.Batch(waitForChatMsg(m.node.MsgChan), tiCmd, vpCmd)
+
 
 	case logMsg:
 		m.messages = append(m.messages, sysStyle.Render(string(msg)))

@@ -13,6 +13,7 @@ enum MessageType {
   PEER_EXCHANGE = 1;
   PING = 2;
   PONG = 3;
+  FILE = 4;
 }
 
 message ChatMessage {
@@ -23,4 +24,7 @@ message ChatMessage {
   MessageType type = 5;
   repeated string known_peers = 6;
   string listen_addr = 7;
+  bytes file_data = 8;
+  string file_name = 9;
+  int64 file_size = 10;
 }
